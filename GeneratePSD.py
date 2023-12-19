@@ -10,8 +10,8 @@ import cupyx.scipy.fft as gfft
 
 
 class GeneratePSD:
-    def __init__(self, root_path=None, IF_path=None, eigen_path=None, CMLT_paths=None):
-        self.__use_GPU = True
+    def __init__(self, root_path=None, IF_path=None, eigen_path=None, CMLT_paths=None, GPU=True):
+        self.__use_GPU = GPU
         
         self.allDM  = None
         self.__dat  = None
@@ -40,8 +40,9 @@ class GeneratePSD:
             self.pinned_mempool = cp.get_default_pinned_memory_pool()
 
     def __del__(self):
-        self.mempool = cp.get_default_memory_pool()
-        self.pinned_mempool = cp.get_default_pinned_memory_pool()
+        if self.__use_GPU:
+            self.mempool.free_all_blocks()
+            self.pinned_mempool.free_all_blocks() # clear GPU memory
 
 
     def ReadFITSdata(self, filename):
@@ -60,8 +61,8 @@ class GeneratePSD:
                 self.allDM[:,:,cpt] = np.array(HDUL[0].data)
 
         self.allDM2 = self.allDM.reshape(240*240, 1156) # command 2 phase (2D matrix)
-
-
+        
+        
     def LoadData(self, rootpath=None):
         if rootpath is not None:
             self.rootpath = os.path.normpath(rootpath)
@@ -164,23 +165,29 @@ class GeneratePSD:
         if self.exclude_modes is not None:
             self.KL_ids[:, self.exclude_modes] = 0.0
 
-        #convert_factor = 2*np.pi/0.5e-6*1e-6;  #[microns] -> [rad] at lambda=500 [nm]
+        #convert_factor = 2*np.pi/0.5e-6*1e-6  #[microns] -> [rad] at lambda=500 [nm]
         SPARTAunit2Microns = 35 # 35 microns per SPARTA unit
         Surface2WF = 2 # multiplicative factor to go from surface to WF
-        A = SPARTAunit2Microns * Surface2WF * 1e3 #* convert_factor
+        A = SPARTAunit2Microns * Surface2WF#* convert_factor
 
         if not self.__use_GPU:
             print('Computing residual phase sreens from KL modes coefficients...')
-            phase_screens = self.KL2phase @ self.KL_ids.T * A 
+            phase_screens = self.KL2phase @ self.KL_ids.T #* A 
             phase_screens_cube = phase_screens.reshape([240,240,phase_screens.shape[1]])
             print('Done!')
 
             print('Computing FFTs of each phase screen and spectra...')
             spectra = np.zeros([480, 480, phase_screens_cube.shape[2]], dtype=np.complex64)
             phase   = np.zeros([480, 480], dtype=np.complex64)
+            # KL_pupil_pad = np.zeros([480, 480], dtype=cp.float32)
+            # KL_pupil_pad[240//2:240//2+240, 240//2:240//2+240] = self.pupil
+
             for i in tqdm(range(phase_screens_cube.shape[2])):
                 phase[240//2:240//2+240, 240//2:240//2+240] = phase_screens_cube[:,:,i] # zero padding
+                # RMS = np.sqrt(np.sum(phase**2) / KL_pupil_pad.sum())
+                # phase = phase / RMS * 100.0
                 spectra[:,:,i] = np.abs(np.fft.fftshift( 1/480. * np.fft.fft2(np.fft.fftshift(phase)) ))
+                
             print('Done!\nComputing PSD...')
             self.PSD = spectra.var(axis=2)
             del spectra, phase
@@ -196,12 +203,19 @@ class GeneratePSD:
             FFT_batch          = cp.zeros([480, 480,  batch_size], dtype=cp.complex64)
             phase_padded_batch = cp.zeros([480, 480,  batch_size], dtype=np.float32)
             variance_batches   = cp.zeros([480, 480,  N//batch_size], dtype=cp.float32)
-
+            # KL_pupil_pad       = cp.zeros([480, 480], dtype=cp.float32)
+            # KL_pupil_pad[240//2:240//2+240, 240//2:240//2+240] = cp.array(self.pupil)
+            
             plan = get_fft_plan(phase_padded_batch, axes=(0,1), value_type='C2C') # for batched, C2C, 2D transform
 
             for i in tqdm(range(N//batch_size)):
                 phase_padded_batch[240//2:240//2+240, 240//2:240//2+240] = \
-                    (KL2phase_buf @ self.KL_ids[i*batch_size:(i+1)*batch_size,:].T * A).reshape([240,240,batch_size])
+                    (KL2phase_buf @ self.KL_ids[i*batch_size:(i+1)*batch_size,:].T).reshape([240,240,batch_size])
+                
+                # RMSs = cp.sqrt(cp.sum(phase_padded_batch**2, axis=(0,1)) / KL_pupil_pad.sum())
+                # phase_padded_batch /= RMSs[None, None, ...]
+                # phase_padded_batch *= 100.0 
+
                 FFT_batch = cp.abs( gfft.fftshift(1/480.*gfft.fft2(gfft.fftshift(phase_padded_batch), axes=(0,1), plan=plan)) )
                 temp_mean = FFT_batch.mean(axis=2, keepdims=True)
                 variance_batches[:,:,i] = cp.sum( (FFT_batch-temp_mean)**2, axis=2 )
