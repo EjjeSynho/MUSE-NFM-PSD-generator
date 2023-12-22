@@ -1,9 +1,8 @@
 import numpy as np
 import cupy as cp
-from cupyx.scipy.fft import get_fft_plan
-import cupyx.scipy.fft as gfft
-import scipy.special as spc
 from numpy.random import RandomState
+import scipy.special as spc
+import cupyx.scipy.fft as gfft
 from cupyx.scipy.fft import get_fft_plan
 
 
@@ -51,7 +50,7 @@ def GenerateFullPSD(PSD_AO, r0=0.1, L0=47.93, return_vK=False):
         return PSD_total
 
 
-def PSDrealizationBatchGPU(PSD_inp, batch_size=500):
+def PSDrealizationBatchGPU(PSD_inp, batch_size=500, return_CPU=True, remove_piston=True):
     mempool = cp.get_default_memory_pool()
     pinned_mempool = cp.get_default_pinned_memory_pool()
 
@@ -60,16 +59,47 @@ def PSDrealizationBatchGPU(PSD_inp, batch_size=500):
     realization_buf = cp.zeros(dimensions, dtype=np.complex64)
     plan = get_fft_plan(realization_buf, axes=(0,1), value_type='C2C') # for batched, C2C, 2D transform
     
-    rng = cp.random.default_rng()
+    rng = np.random.default_rng()
     realization = cp.asarray(rng.normal(size=dimensions) + 1j*rng.normal(size=dimensions), dtype=cp.complex64)
     realization_buf = cp.atleast_3d(cp.sqrt(cp.array(PSD_inp))) * cp.array(realization, dtype=cp.complex64)
-    phase_batch = cp.real(gfft.fftshift( 1.0/PSD_inp.shape[0]*gfft.ifft2(gfft.fftshift(realization_buf.astype(cp.complex64)),axes=(0,1),plan=plan) ))
-    out = cp.asnumpy(phase_batch)
-
-    del phase_batch, realization_buf, plan
+    
+    phase_batch = cp.real(
+        gfft.fftshift
+        (
+            1.0 / PSD_inp.shape[0] * gfft.ifft2(gfft.fftshift(realization_buf.astype(cp.complex64)), axes = (0,1), plan = plan)
+        )
+    )
+    
+    if return_CPU:
+        out = phase_batch.get()
+        del phase_batch, realization_buf, plan
+    else:
+        out = phase_batch
+        del realization_buf, plan
+        
     mempool.free_all_blocks()
     pinned_mempool.free_all_blocks()
-    return out  # in [nm]
+    
+    if remove_piston:
+        return out - out.mean(axis=(0,1))[None, None, :] # in [nm]
+    else:
+        return out # in [nm]
+    
+
+def remove_piston_and_TT(WFs, pupil):
+    WFs -= WFs.mean(axis=(0,1))[None,None,:] # remove piston
+
+    # Generate tip-tilt modes
+    tip, tilt = cp.meshgrid(cp.arange(0, WFs.shape[0]),  cp.arange(0, WFs.shape[1]))
+
+    def TT_mode(TT):
+        TT = TT.astype(cp.float32) / cp.std(TT[pupil>0])
+        return (TT - cp.mean(TT[pupil>0])) * pupil
+
+    TT_basis = cp.dstack([TT_mode(tip), TT_mode(tilt)])
+    TT_coefs = (WFs*pupil[...,None]).reshape(-1, WFs.shape[-1]).T @ TT_basis.reshape(-1, 2) / pupil.sum()
+    
+    return WFs*pupil[...,None] - TT_basis @ TT_coefs.T # remove tip-tilt
 
 
 # Functions below map WFE to DIMM seiing, based on 'Test report GALACSI NFM October 2019 TTR-104.0016.docx', page 31

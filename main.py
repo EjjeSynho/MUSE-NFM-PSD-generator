@@ -2,59 +2,82 @@
 %reload_ext autoreload
 %autoreload 2
 
+import os
+import json
+import numpy as np
 from datetime import datetime 
 from matplotlib import colors
 import matplotlib.pyplot as plt
-import numpy as np
-import os
+from joblib import dump, load
+import cupy as cp
 
 from GeneratePSD import GeneratePSD
-from GeneratePhase import GenerateFullPSD, PSDrealizationBatchGPU, HO_WFE_vs_seeing, HO_WFE_vs_r0, HO_PSD_vs_seeing, HO_PSD_vs_r0
+from GeneratePhase import *
 
-from photutils.centroids import centroid_quadratic
-from photutils.profiles  import RadialProfile
-
-#%%
 # Loading influence functions
-base = os.path.normpath('F:/ESO/Data/AOF/')
 
-choice = 0
+# Open json file
+with open('settings.json') as f:
+    settings = json.load(f)
+    
+for i in settings.keys():
+    settings[i] = os.path.normpath(settings[i])
+    
+#%%
+try:
+    base = settings['base_path']
 
-if choice == 0:
-    # Boosted HO
-    path_IFs   = os.path.normpath(os.path.join(base,'NFM_CM_files_181121/'))
-    path_eigen = os.path.normpath(os.path.join(base,'NFM_CM_files_181121/'))
-    path_root  = os.path.normpath(os.path.join(base,'LTAO_PSD_HarnessData/0026_HOCM_newref_3_HO_KI_-0.4/'))
-    CMLT_paths    = [ os.path.join(base, 'LTAO_PSD_HarnessData/ReferenceCMs', 'LTAO_CM'+str(i)+'_Ref_4Lay1300_nt100_np2p5.fits') for i in range(1,5) ]
-    CM_path = CMLT_paths
+    choice = 0
 
-elif choice == 1:
-    # Boosted HO + misregistration
-    path_root  = os.path.normpath(os.path.join(base,'LTAO_PSD_HarnessData/0026_HOCM_newref_3_HO_KI_-0.4/'))
-    path_eigen = os.path.normpath(os.path.join(base,'NFM_CM_files_181121/'))
-    path_IFs   = os.path.normpath(os.path.join(base,'NFM_CM_files_181121/'))
-    CMLTmis_paths  = [ os.path.join(base, 'LTAO_PSD_HarnessData/ReferenceCMs', 'LTAO_CM'+str(i)+'_Ref_4Lay1300_nt100_np2p5_0misreg.fits') for i in range(1,5) ]
-    CM_path = CMLTmis_paths
+    if choice == 0:
+        # Boosted HO
+        path_IFs   = os.path.normpath(os.path.join(base,'NFM_CM_files_181121/'))
+        path_eigen = os.path.normpath(os.path.join(base,'NFM_CM_files_181121/'))
+        path_root  = os.path.normpath(os.path.join(base,'LTAO_PSD_HarnessData/0026_HOCM_newref_3_HO_KI_-0.4/'))
+        CMLT_paths    = [ os.path.join(base, 'LTAO_PSD_HarnessData/ReferenceCMs', 'LTAO_CM'+str(i)+'_Ref_4Lay1300_nt100_np2p5.fits') for i in range(1,5) ]
+        CM_path = CMLT_paths
 
-else:#elif choice == 2:
-    # GLAO
-    path_root  = os.path.normpath(os.path.join(base,'LTAO_PSD_HarnessData/Day1_nMaxModes/0020_HOCM_1_HO_KI_-0.4/'))
-    CMGLAO_paths  = [ os.path.join(base, 'LTAO_PSD_HarnessData/ReferenceCMs', 'LTAO_CM'+str(i)+'_GLAO_E75_nt300.fits') for i in range(1,5) ]
-    CM_path = CMGLAO_paths
+    elif choice == 1:
+        # Boosted HO + misregistration
+        path_root  = os.path.normpath(os.path.join(base,'LTAO_PSD_HarnessData/0026_HOCM_newref_3_HO_KI_-0.4/'))
+        path_eigen = os.path.normpath(os.path.join(base,'NFM_CM_files_181121/'))
+        path_IFs   = os.path.normpath(os.path.join(base,'NFM_CM_files_181121/'))
+        CMLTmis_paths  = [ os.path.join(base, 'LTAO_PSD_HarnessData/ReferenceCMs', 'LTAO_CM'+str(i)+'_Ref_4Lay1300_nt100_np2p5_0misreg.fits') for i in range(1,5) ]
+        CM_path = CMLTmis_paths
 
-IF_entries = {
-    'eigmod': 'eigenmodes',
-    'eigval': 'eigenvalues',
-    'usdact': 'UsedActMap'
-}
+    else:#elif choice == 2:
+        # GLAO
+        path_root  = os.path.normpath(os.path.join(base,'LTAO_PSD_HarnessData/Day1_nMaxModes/0020_HOCM_1_HO_KI_-0.4/'))
+        CMGLAO_paths  = [ os.path.join(base, 'LTAO_PSD_HarnessData/ReferenceCMs', 'LTAO_CM'+str(i)+'_GLAO_E75_nt300.fits') for i in range(1,5) ]
+        CM_path = CMGLAO_paths
 
-PSD_generator = GeneratePSD(path_root, path_IFs, path_eigen, CM_path)
-if choice == 0 or choice == 1 or choice == 2:
-    PSD_generator.IF_entries = IF_entries
+    IF_entries = {
+        'eigmod': 'eigenmodes',
+        'eigval': 'eigenvalues',
+        'usdact': 'UsedActMap'
+    }
 
-#PSD_generator.exclude_modes = list(set([0,1,2])) #,33,34,56,57]))
+    PSD_generator = GeneratePSD(path_root, path_IFs, path_eigen, CM_path)
+    if choice == 0 or choice == 1 or choice == 2:
+        PSD_generator.IF_entries = IF_entries
 
-PSD = PSD_generator.ComputePSD()
+    #PSD_generator.exclude_modes = list(set([0,1,2])) #,33,34,56,57]))
+
+    PSD = PSD_generator.ComputePSD()
+    KL_pupil = PSD_generator.pupil
+
+    path_save = os.path.join(settings['LIFT_path'], 'AOF_PSD.pkl')
+    dump(PSD, path_save, compress='gzip')
+    
+    path_save = os.path.join(settings['LIFT_path'], 'KL_pupil.pkl')
+    dump(KL_pupil, path_save, compress='gzip')
+    
+except:
+    path_load = os.path.join(settings['LIFT_path'],  'AOF_PSD.pkl')
+    PSD = load(path_load)
+    path_load = os.path.join(settings['LIFT_path'],  'KL_pupil.pkl')
+    KL_pupil = load(path_load)
+    
 
 plt.figure(dpi=200)
 PSD_size = PSD.shape[0]
@@ -65,18 +88,46 @@ PSD_cropped = PSD[zoomed]
 plt.imshow(np.log(PSD_cropped)) #, norm=norm)
 plt.show()
 
-from joblib import dump, load
-path_save = os.path.normpath(os.path.join(os.environ['PROJ'], 'LIFT/LIFT_full/data/', 'AOF_PSD.pkl'))
-dump(PSD, path_save, compress='gzip')
-
 
 #%%
-PSD_total, PSD_vK = HO_PSD_vs_seeing(PSD, 1.3, return_vK=True)
+seeing = 1.5 #0.35
 
-phases = PSDrealizationBatchGPU(PSD_total, batch_size=100)
-phases_ = phases * PSD_generator.pupil[...,None]
-STDs = np.sqrt( np.sum(phases_**2, axis=(0,1)) / np.sum(PSD_generator.pupil) )
+PSD_total, PSD_vK = HO_PSD_vs_seeing(PSD, seeing, return_vK=True)
+
+def binning(inp, N, regime='sum'):
+    if N == 1:
+        return inp
+    
+    xp = cp.get_array_module(inp)
+    out = xp.stack(xp.split(xp.stack(xp.split(xp.atleast_3d(inp), inp.shape[0]//N, axis=0)), inp.shape[1]//N, axis=2))
+    if    regime == 'max':  func = xp.max
+    elif  regime == 'min':  func = xp.min
+    elif  regime == 'mean': func = xp.mean
+    else: func = xp.sum
+        
+    return xp.squeeze( xp.transpose( func(out, axis=(2,3), keepdims=True), axes=(1,0,2,3,4)) )
+
+
+bin_factor = 4
+
+PSD_total = binning(PSD_total, bin_factor, regime='mean') / bin_factor**4
+pupil = binning(cp.array(KL_pupil), bin_factor, regime='max')
+
+phases = PSDrealizationBatchGPU(cp.array(PSD_total), batch_size=100, return_CPU=False)
+
+WFE_expected = HO_WFE_vs_seeing(seeing)
+
+
+phases = remove_piston_and_TT(phases, pupil)
+STDs = np.sqrt( np.sum(phases**2, axis=(0,1)) / np.sum(pupil) )
 STDs.mean()
+
+print(f'Generated WFE: {STDs.mean()}, expected WFE: {WFE_expected}')
+
+plt.imshow(phases[...,0].get())
+plt.colorbar()
+plt.show()
+
 
 #%%
 SPARTAunit2Microns = 35 # 35 microns per SPARTA unit
@@ -115,25 +166,23 @@ plt.legend()
 plt.grid()
 plt.show()
 
-
-#%%
+'''
 phase_test_batch1 = PSDrealizationBatchGPU(PSD_total)
 phase_test_batch2 = PSDrealizationBatchGPU(PSD_total)
 phase_test_batch  = np.dstack([phase_test_batch1, phase_test_batch2]) # total 1000 phase screen generated
 
 import pickle
-with open('E:/ESO/Data/AOF/IRLOS/Synthetic/LIFT_dataset/phase_screens.pickle', 'wb') as handle:
+with open(settings['data_path']+'IRLOS/Synthetic/LIFT_dataset/phase_screens.pickle', 'wb') as handle:
     pickle.dump(phase_test_batch, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-#%%
 phase_test = phase_test_batch[:,:,22+26]
 pupil = PSD_generator.pupil
 print(phase_test[np.where(pupil>0.0)].std())
 plt.imshow(phase_test*pupil)
-
+'''
 #%%
 
-filename = 'C:/Users/akuznets/Data/AOF/LTAO_PSD_HarnessData/Day1_nMaxModes/0020_HOCM_1_HO_KI_-0.4/0020_HOCM_1_HO_KI_-0.4.txt'
+filename = settings['data_path']+'LTAO_PSD_HarnessData/Day1_nMaxModes/0020_HOCM_1_HO_KI_-0.4/0020_HOCM_1_HO_KI_-0.4.txt'
 
 def ReadObservationFile(filename):
     with open(filename) as f:
