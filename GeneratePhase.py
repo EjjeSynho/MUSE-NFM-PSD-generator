@@ -66,7 +66,7 @@ def PSDrealizationBatchGPU(PSD_inp, batch_size=500, return_CPU=True, remove_pist
     phase_batch = cp.real(
         gfft.fftshift
         (
-            1.0 / PSD_inp.shape[0] * gfft.ifft2(gfft.fftshift(realization_buf.astype(cp.complex64)), axes = (0,1), plan = plan)
+            1.0 / PSD_inp.shape[0] * gfft.ifft2(gfft.fftshift(realization_buf.astype(cp.complex64)), axes=(0,1), plan=plan)
         )
     )
     

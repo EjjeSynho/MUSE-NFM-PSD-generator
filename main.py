@@ -90,7 +90,8 @@ plt.show()
 
 
 #%%
-seeing = 1.5 #0.35
+# seeing = 1.5 #0.35
+seeing = 0.35
 
 PSD_total, PSD_vK = HO_PSD_vs_seeing(PSD, seeing, return_vK=True)
 
@@ -108,11 +109,107 @@ def binning(inp, N, regime='sum'):
     return xp.squeeze( xp.transpose( func(out, axis=(2,3), keepdims=True), axes=(1,0,2,3,4)) )
 
 
-bin_factor = 4
+bin_factor = 1
 
 PSD_total = binning(PSD_total, bin_factor, regime='mean') / bin_factor**4
 pupil = binning(cp.array(KL_pupil), bin_factor, regime='max')
 
+#%%
+from matplotlib import cm
+from PIL import Image
+from tqdm import tqdm
+
+def save_GIF(array, duration=1e3, scale=1, path='test.gif', colormap=cm.viridis):
+    from skimage.transform import rescale
+    
+    # If the input is an array or a tensor, we need to convert it to a list of PIL images first
+    if type(array) == np.ndarray:
+        gif_anim = []
+
+        array_ = array.copy()
+
+        if array.shape[0] != array.shape[1] and array.shape[1] == array.shape[2]:
+            array_ = array_.transpose(1,2,0)
+
+        for layer in tqdm(np.rollaxis(array_, 2)):
+            buf = layer/layer.max()
+            if scale != 1.0:
+                buf = rescale(buf, scale, order=0)
+            gif_anim.append( Image.fromarray(np.uint8(colormap(buf)*255)) )
+    else:
+        # In this case, we can directly save the list of PIL images
+        gif_anim = array
+
+    # gif_anim[0].save(path, save_all=True, append_images=gif_anim[1:], optimize=False, quality=100, duration=duration, loop=0)
+    gif_anim[0].save(path, save_all=True, append_images=gif_anim[1:], optimize=False, compress_level=0, duration=duration, loop=0)
+
+
+#%%
+from cupyx.scipy.fft import get_fft_plan
+import cupyx.scipy.fft as gfft
+
+N = PSD_total.shape[0]
+
+rng = np.random.default_rng()
+noise_map = rng.normal(size=(N,N)) + 1j*rng.normal(size=(N,N))
+
+coords  = np.linspace(0, N-1, N) - N//2 + 0.5 * (1 - N%2)
+[xx,yy] = np.meshgrid( coords, coords, copy=False)
+
+# Definr wind speed and bubbling
+a = cp.float32(1)
+b = cp.float32(0.5)
+c = cp.float32(0.01)
+
+center_grid = lambda x: 1/np.sqrt(3) * x / (N//2 - 0.5*(1-N%2))
+
+tip  = 1.0 / np.sqrt(3) * center_grid(xx)
+tilt = 1.0 / np.sqrt(3) * center_grid(yy)
+
+mempool = cp.get_default_memory_pool()
+pinned_mempool = cp.get_default_pinned_memory_pool()
+
+varibility = cp.array(np.random.uniform(0.5, 1, size=(N,N,1)), dtype=cp.float32)
+PSD_ = cp.array((PSD_total * noise_map)[...,None]).astype(cp.complex64)
+tip  = cp.array(tip [...,None], dtype=cp.float32)
+tilt = cp.array(tilt[...,None], dtype=cp.float32)
+
+num_iter = 2000
+
+i = cp.arange(num_iter,dtype=cp.float32).reshape(1,1,-1)
+
+plan = get_fft_plan(cp.zeros([PSD_.shape[0], PSD_.shape[1], num_iter], dtype=cp.complex64), axes=(0,1), value_type='C2C') # for batched, C2C, 2D transform
+phi = cp.complex64(2j*cp.pi)
+
+#%%
+start = cp.cuda.Event()
+end   = cp.cuda.Event()
+
+start.record()
+
+evolution = i*(tip*a + tilt*b + varibility*c)
+phases = cp.real( gfft.fftshift(1/N * gfft.fft2(gfft.fftshift(PSD_ * cp.exp(phi*evolution)), axes=(0,1), plan=plan)) )
+
+end.record()
+end.synchronize()
+
+time = cp.cuda.get_elapsed_time(start, end)  # Time in milliseconds
+
+print(f"Elapsed time: {time} milliseconds")
+
+
+#%%
+phases /= 1e11
+phases -= phases.min()
+phases /= phases.max()
+phases  = phases.get()
+
+mempool.free_all_blocks()
+pinned_mempool.free_all_blocks()
+
+save_GIF(phases, duration=1, scale=1, path='test.gif')
+
+#%%
 phases = PSDrealizationBatchGPU(cp.array(PSD_total), batch_size=100, return_CPU=False)
 
 WFE_expected = HO_WFE_vs_seeing(seeing)
@@ -127,6 +224,7 @@ print(f'Generated WFE: {STDs.mean()}, expected WFE: {WFE_expected}')
 plt.imshow(phases[...,0].get())
 plt.colorbar()
 plt.show()
+
 
 
 #%%

@@ -201,7 +201,7 @@ class GeneratePSD:
             print('Computing FFTs of each phase screen and spectra (on GPU)...')
             temp_mean          = cp.zeros([480, 480], dtype=cp.float32)
             FFT_batch          = cp.zeros([480, 480,  batch_size], dtype=cp.complex64)
-            phase_padded_batch = cp.zeros([480, 480,  batch_size], dtype=np.float32)
+            phase_padded_batch = cp.zeros([480, 480,  batch_size], dtype=cp.float32)
             variance_batches   = cp.zeros([480, 480,  N//batch_size], dtype=cp.float32)
             # KL_pupil_pad       = cp.zeros([480, 480], dtype=cp.float32)
             # KL_pupil_pad[240//2:240//2+240, 240//2:240//2+240] = cp.array(self.pupil)

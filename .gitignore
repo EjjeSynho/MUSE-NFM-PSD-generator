@@ -4,3 +4,5 @@ __pycache__/
 .vscode
 *.vscode
 settings.json
+*.mp4
+*.gif
